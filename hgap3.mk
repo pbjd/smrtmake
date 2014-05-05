@@ -1,18 +1,16 @@
-SHELL = /bin/bash
-ROOTDIR = /mnt/data3/vol54/2590675/0013/Analysis_Results
-QUEUE ?= secondary
-GENOME_SIZE ?= 5000000
-CHUNK_SIZE ?= 3
-NPROC ?= 15
+QUEUE ?= huasm
+GENOME_SIZE ?= 700000000
+CHUNK_SIZE ?= 15
+NPROC ?= 32
 LOCALTMP ?= /scratch
+
 SPLITBESTN = $(shell echo $$(( 30/$(CHUNK_SIZE)+2 )))
 
+SHELL = /bin/bash
 TASKDIRS = filter correct assemble polish log
 
 SMRTETC = $(SEYMOUR_HOME)/analysis/etc
 PWD = $(shell pwd)
-
-BAXFILES := $(wildcard $(ROOTDIR)/*.bax.h5)
 
 CHUNKS := $(shell seq 1 $(CHUNK_SIZE))
 
@@ -24,6 +22,7 @@ SUBFASTA := $(BAXFOFNS:input.%.fofn=filter/subreads.%.fasta)
 SUBLENGTHS := $(BAXFOFNS:input.%.fofn=filter/subreads.%.lengths)
 LONGFASTA := $(BAXFOFNS:input.%.fofn=filter/longreads.%.fasta)
 MAPPEDM4 := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4)
+MAPPEDM4FILT := $(BAXFOFNS:input.%.fofn=correct/seeds.%.m4.filt)
 CORRECTED := $(BAXFOFNS:input.%.fofn=correct/corrected.%.fasta)
 CMPH5 := $(BAXFOFNS:input.%.fofn=polish/aligned_reads.%.cmp.h5)
 
@@ -43,7 +42,7 @@ assembly : polish/polished_assembly.fasta | prepare
 
 polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference
 	$(QSUB) -N polish -pe smp $(NPROC) variantCaller.py -P $(SMRTETC)/algorithm_parameters/2014-03 \
-	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o corrections.gff \
+	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o polish/corrections.gff \
 	-o $@ -o $(@:.fasta=.fastq.gz)
 
 polish/aligned_reads.cmp.h5 : $(CMPH5)
@@ -51,13 +50,11 @@ polish/aligned_reads.cmp.h5 : $(CMPH5)
 	$(QSUB) -N mergesort 'cmph5tools.py -vv merge --outFile=$@ $^;cmph5tools.py -vv sort --deep --inPlace $@'
 	#h5repack -f GZIP=1 $@ $@_TMP && mv $@_TMP $@
 
-$(CMPH5) : polish/aligned_reads.%.cmp.h5 : input.%.fofn filter/regions.%.fofn | polish/reference
-	$(QSUB) -N res.$* -pe smp $(NPROC) pbalign.py $< $| $@ --seed=1 --minAccuracy=0.75 \
-	--minLength=50 --algorithmOptions=\"-useQuality -minMatch 12 -bestn 10 -minPctIdentity 70.0\" \
-	--hitPolicy=randombest --tmpDir=$(LOCALTMP) -vv --nproc=$(NPROC) --regionTable=$(word 2,$^)
+$(CMPH5) : polish/aligned_reads.%.cmp.h5 : input.%.fofn filter/regions.%.fofn polish/reference
+	$(QSUB) -N res.$* -pe smp $(NPROC) 'pbalign.py $< $(word 3,$^) $@ --seed=1 --minAccuracy=0.75 --minLength=50 --algorithmOptions="-useQuality -minMatch 12 -bestn 10 -minPctIdentity 70.0" --hitPolicy=randombest --tmpDir=$(LOCALTMP) -vv --nproc=$(NPROC) --regionTable=$(word 2,$^) && loadPulses $< $@ -metrics DeletionQV,IPD,InsertionQV,PulseWidth,QualityValue,MergeQV,SubstitutionQV,DeletionTag -byread'
 
 polish/reference : assemble/draft_assembly.fasta
-	referenceUploader --skipIndexUpdate -c -n "reference" -p polish -f $<  --saw="sawriter -blt 8 -welter" --samIdx="samtools faidx"
+	referenceUploader --skipIndexUpdate -c -n "reference" -p polish -f $< --saw="sawriter -blt 8 -welter" --samIdx="samtools faidx"
 
 ##
 
@@ -92,27 +89,33 @@ correct/corrected.fasta : $(CORRECTED)
 ## Correction (optimizations available here) ##
 correction : $(CORRECTED) ;
 
-$(CORRECTED) : correct/corrected.%.fasta : correct/seeds.%.m4 correct/seeds.m4.fofn filter/subreads.fasta
+$(CORRECTED) : correct/corrected.%.fasta : correct/seeds.%.m4.filt correct/seeds.m4.fofn filter/subreads.fasta
 	$(QSUB) -N corr.$* -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
 
 correct/seeds.m4.fofn : $(MAPPEDM4)
 	echo $(^:%=$(PWD)/%) | sed 's/ /\n/g' > $@
 
+$(MAPPEDM4FILT) : correct/seeds.%.m4.filt : correct/seeds.%.m4
+	filterm4.py $< > $@
+
 filter/subreads.fasta : $(SUBFASTA)
 	cat $^ > $@
+
 ##
 
 ## Read overlap using BLASR ##
+mapped : $(MAPPEDM4) ;
+
 $(MAPPEDM4) : correct/seeds.%.m4 : filter/longreads.%.fasta $(QUERYFOFN)
 	$(QSUB) -N blasr.$* -pe smp $(NPROC) blasr $(QUERYFOFN) $< -out $@ -m 4 -nproc $(NPROC) \
-	-bestn $(SPLITBESTN) -noSplitSubreads -maxScore -1000 -maxLCPLength 16 -minMatch 14
+	-bestn $(SPLITBESTN) -nCandidates $(SPLITBESTN) -noSplitSubreads -maxScore -1000 -maxLCPLength 16 -minMatch 14
 
 $(QUERYFOFN) : $(SUBFASTA)
 	echo $^ | sed 's/ /\n/g' > $@
 ##
 
 ## Generating the long seed reads for mapping ##
-longreads : $(LONGFASTA);
+longreads : $(LONGFASTA) ;
 
 $(LONGFASTA) : filter/longreads.%.fasta : filter/subreads.%.fasta filter/subreads.%.lengths $(CUTOFF)
 	awk -v len=$$(cat $(CUTOFF)) '($$1 < len ){ print $$2 }' $(word 2,$^) | fastaremove $< stdin > $@
@@ -128,7 +131,7 @@ $(SUBLENGTHS) : filter/subreads.%.lengths : filter/subreads.%.fasta
 subreads : $(SUBFASTA) ;
 
 $(SUBFASTA) : filter/subreads.%.fasta : filter/regions.%.fofn input.%.fofn
-	$(QSUB) -N sub.$* pls2fasta -trimByRegion -regionTable $< $(word 2,$^) $@
+	$(QSUB) -pe smp $(shell expr $(NPROC) / 2) -N sub.$* pls2fasta -trimByRegion -regionTable $< $(word 2,$^) $@
 ##
 
 ## Filtering ##
@@ -140,15 +143,11 @@ $(REGFOFNS) : filter/regions.%.fofn : input.%.fofn | prepare
 ##
 
 ## Initial chunking ##
+inputs: $(BAXFOFNS) ;
+
 $(BAXFOFNS) : input.fofn
-	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++, $(CHUNK_SIZE))}' $<
+	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
 ##
-
-# optional root directory
-input.fofn : $(BAXFILES)
-	echo $^ | sed 's/ /\n/g' > $@
-
-$(BAXFILES) : ;
 
 clean :
 	rm -rf $(TASKDIRS)
