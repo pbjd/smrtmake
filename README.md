@@ -39,6 +39,11 @@ It can also be parallelized using the '-j' option to *make*
 
     > make -j 8
 
+**NOTE:** There are some assumptions builtin to this workflow that may not hold 
+in your environment, e.g., metadata.xml file locations.  While fixable, it's not 
+always obvious what you need to do.  Send me an email and I can try to help you 
+get unstuck.
+
 
 hgap3.mk
 --------
