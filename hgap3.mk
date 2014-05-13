@@ -45,21 +45,26 @@ assembly : polish/polished_assembly.fasta | prepare
 
 ## Assembly polishing ##
 
-polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference
+polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference cmph5_chemistry_loaded
 	$(QSUB) -N polish -pe smp $(NPROC) variantCaller.py -P $(SMRTETC)/algorithm_parameters/2014-03 \
-	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o polish/corrections.gff \
+	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o corrections.gff \
 	-o $@ -o $(@:.fasta=.fastq.gz)
+
+cmph5_chemistry_loaded : filter/chemistry_mapping.xml polish/aligned_reads.cmp.h5
+	loadSequencingChemistryIntoCmpH5.py --xml $< --h5 $(word 2,$^) && touch chemistry_loaded
 
 polish/aligned_reads.cmp.h5 : $(CMPH5)
 	assertCmpH5NonEmpty.py --debug $^
 	$(QSUB) -N mergesort 'cmph5tools.py -vv merge --outFile=$@ $^;cmph5tools.py -vv sort --deep --inPlace $@'
 	#h5repack -f GZIP=1 $@ $@_TMP && mv $@_TMP $@
 
-$(CMPH5) : polish/aligned_reads.%.cmp.h5 : input.%.fofn filter/regions.%.fofn polish/reference
-	$(QSUB) -N res.$* -pe smp $(NPROC) 'pbalign.py $< $(word 3,$^) $@ --seed=1 --minAccuracy=0.75 --minLength=50 --algorithmOptions="-useQuality -minMatch 12 -bestn 10 -minPctIdentity 70.0" --hitPolicy=randombest --tmpDir=$(LOCALTMP) -vv --nproc=$(NPROC) --regionTable=$(word 2,$^) && loadPulses $< $@ -metrics DeletionQV,IPD,InsertionQV,PulseWidth,QualityValue,MergeQV,SubstitutionQV,DeletionTag -byread'
+$(CMPH5) : polish/aligned_reads.%.cmp.h5 : input.%.fofn filter/regions.%.fofn | polish/reference
+	$(QSUB) -N res.$* -pe smp $(NPROC) pbalign.py $< $| $@ --seed=1 --minAccuracy=0.75 \
+	--minLength=50 --algorithmOptions=\"-useQuality -minMatch 12 -bestn 10 -minPctIdentity 70.0\" \
+	--hitPolicy=randombest --tmpDir=$(LOCALTMP) -vv --nproc=$(NPROC) --regionTable=$(word 2,$^)
 
 polish/reference : assemble/draft_assembly.fasta
-	referenceUploader --skipIndexUpdate -c -n "reference" -p polish -f $< --saw="sawriter -blt 8 -welter" --samIdx="samtools faidx"
+	referenceUploader --skipIndexUpdate -c -n "reference" -p polish -f $<  --saw="sawriter -blt 8 -welter" --samIdx="samtools faidx"
 
 ##
 
@@ -80,7 +85,7 @@ assemble/utg.spec : correct/corrected.fasta
 	--interactiveTmpl=$(SMRTETC)/cluster/SGE/interactive.tmpl \
 	--smrtpipeRc=$(SMRTETC)/smrtpipe.rc --genomeSize=$(GENOME_SIZE) --defaultFrgMinLen=500 \
 	--xCoverage=20 --ovlErrorRate=0.06 --ovlMinLen=40 --merSize=14 --corrReadsFasta=$< \
-	--specOut=$@ --sgeName=utg --gridParams="useGrid:1, scriptOnGrid:1, frgCorrOnGrid:1, ovlCorrOnGrid:1" \
+	--specOut=$@ --sgeName=utg --gridParams="useGrid:0, scriptOnGrid:0, frgCorrOnGrid:0, ovlCorrOnGrid:0" \
 	--maxSlotPerc=1 $(SMRTETC)/celeraAssembler/unitig.spec
 
 assemble/utg.frg : $(CORRECTED)
@@ -97,7 +102,7 @@ correction : $(CORRECTED) ;
 $(CORRECTED) : correct/corrected.%.fasta : correct/seeds.%.m4.filt correct/seeds.m4.fofn filter/subreads.fasta
 	$(QSUB) -N corr.$* -pe smp $(NPROC) 'tmp=$$(mktemp -d -p $(LOCALTMP)); mym4=$(PWD)/$< allm4=$(PWD)/$(word 2,$^) subreads=$(PWD)/$(word 3, $^) bestn=24 nproc=$(NPROC) fasta=$(PWD)/$@ fastq=$(PWD)/$(@:.fasta=.fastq) tmp=$$tmp pbdagcon_wf.sh; rm -rf $$tmp'
 
-correct/seeds.m4.fofn : $(MAPPEDM4)
+correct/seeds.m4.fofn : $(MAPPEDM4FILT)
 	echo $(^:%=$(PWD)/%) | sed 's/ /\n/g' > $@
 
 $(MAPPEDM4FILT) : correct/seeds.%.m4.filt : correct/seeds.%.m4
@@ -105,22 +110,19 @@ $(MAPPEDM4FILT) : correct/seeds.%.m4.filt : correct/seeds.%.m4
 
 filter/subreads.fasta : $(SUBFASTA)
 	cat $^ > $@
-
 ##
 
 ## Read overlap using BLASR ##
-mapped : $(MAPPEDM4) ;
-
 $(MAPPEDM4) : correct/seeds.%.m4 : filter/longreads.%.fasta $(QUERYFOFN)
 	$(QSUB) -N blasr.$* -pe smp $(NPROC) blasr $(QUERYFOFN) $< -out $@ -m 4 -nproc $(NPROC) \
-	-bestn $(SPLITBESTN) -nCandidates $(SPLITBESTN) -noSplitSubreads -maxScore -1000 -maxLCPLength 16 -minMatch 14
+	-bestn $(SPLITBESTN) -noSplitSubreads -maxScore -1000 -maxLCPLength 16 -minMatch 14
 
 $(QUERYFOFN) : $(SUBFASTA)
 	echo $^ | sed 's/ /\n/g' > $@
 ##
 
 ## Generating the long seed reads for mapping ##
-longreads : $(LONGFASTA) ;
+longreads : $(LONGFASTA);
 
 $(LONGFASTA) : filter/longreads.%.fasta : filter/subreads.%.fasta filter/subreads.%.lengths $(CUTOFF)
 	awk -v len=$$(cat $(CUTOFF)) '($$1 < len ){ print $$2 }' $(word 2,$^) | fastaremove $< stdin > $@
@@ -136,7 +138,7 @@ $(SUBLENGTHS) : filter/subreads.%.lengths : filter/subreads.%.fasta
 subreads : $(SUBFASTA) ;
 
 $(SUBFASTA) : filter/subreads.%.fasta : filter/regions.%.fofn input.%.fofn
-	$(QSUB) -pe smp $(shell expr $(NPROC) / 2) -N sub.$* pls2fasta -trimByRegion -regionTable $< $(word 2,$^) $@
+	$(QSUB) -N sub.$* pls2fasta -trimByRegion -regionTable $< $(word 2,$^) $@
 ##
 
 ## Filtering ##
@@ -145,14 +147,24 @@ regions : $(REGFOFNS) ;
 $(REGFOFNS) : filter/regions.%.fofn : input.%.fofn | prepare
 	$(QSUB) -N filt.$* filter_plsh5.py --filter='MinReadScore=0.80,MinSRL=500,MinRL=100' \
 	--trim='True' --outputDir=filter --outputFofn=$@ $<
+
+filter/chemistry_mapping.xml : filter/movie_metadata
+	makeChemistryMapping.py --metadata=filter/movie_metadata --output=filter/chemistry_mapping.xml --mapping_xml=$(SMRTETC)/algorithm_parameters/2013-09/mapping.xml
+
+filter/movie_metadata : input.fofn
+	mkdir -p $@
+	sed 's#\(.*\)Analysis_Results/\(m[^\.]*\).*#\1\2.metadata.xml#' $< | sort -u | xargs ln -s -t $@
+
 ##
 
 ## Initial chunking ##
-inputs: $(BAXFOFNS) ;
+inputs : $(BAXFOFNS) ;
 
 $(BAXFOFNS) : input.fofn
-	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
+	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++, $(CHUNK_SIZE))}' $<
 ##
+
+$(BAXFILES) : ;
 
 clean :
 	rm -rf $(TASKDIRS)
