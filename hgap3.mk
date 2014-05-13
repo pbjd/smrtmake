@@ -85,7 +85,7 @@ assemble/utg.spec : correct/corrected.fasta
 	--interactiveTmpl=$(SMRTETC)/cluster/SGE/interactive.tmpl \
 	--smrtpipeRc=$(SMRTETC)/smrtpipe.rc --genomeSize=$(GENOME_SIZE) --defaultFrgMinLen=500 \
 	--xCoverage=20 --ovlErrorRate=0.06 --ovlMinLen=40 --merSize=14 --corrReadsFasta=$< \
-	--specOut=$@ --sgeName=utg --gridParams="useGrid:0, scriptOnGrid:0, frgCorrOnGrid:0, ovlCorrOnGrid:0" \
+	--specOut=$@ --sgeName=utg --gridParams="useGrid:1, scriptOnGrid:1, frgCorrOnGrid:1, ovlCorrOnGrid:1" \
 	--maxSlotPerc=1 $(SMRTETC)/celeraAssembler/unitig.spec
 
 assemble/utg.frg : $(CORRECTED)
