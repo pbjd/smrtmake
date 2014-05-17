@@ -161,7 +161,7 @@ filter/movie_metadata : input.fofn
 inputs : $(BAXFOFNS) ;
 
 $(BAXFOFNS) : input.fofn
-	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++, $(CHUNK_SIZE))}' $<
+	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
 ##
 
 $(BAXFILES) : ;
