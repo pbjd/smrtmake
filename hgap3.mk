@@ -47,7 +47,7 @@ assembly : polish/polished_assembly.fasta | prepare
 
 polish/polished_assembly.fasta : polish/aligned_reads.cmp.h5 polish/reference cmph5_chemistry_loaded
 	$(QSUB) -N polish -pe smp $(NPROC) variantCaller.py -P $(SMRTETC)/algorithm_parameters/2014-03 \
-	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o corrections.gff \
+	-v -j $(NPROC) --algorithm=quiver $< -r $(word 2,$^)/sequence/reference.fasta -o polish/corrections.gff \
 	-o $@ -o $(@:.fasta=.fastq.gz)
 
 cmph5_chemistry_loaded : filter/chemistry_mapping.xml polish/aligned_reads.cmp.h5
@@ -138,7 +138,7 @@ $(SUBLENGTHS) : filter/subreads.%.lengths : filter/subreads.%.fasta
 subreads : $(SUBFASTA) ;
 
 $(SUBFASTA) : filter/subreads.%.fasta : filter/regions.%.fofn input.%.fofn
-	$(QSUB) -N sub.$* pls2fasta -trimByRegion -regionTable $< $(word 2,$^) $@
+	$(QSUB) -pe smp $(shell expr $(NPROC) / 2) -N sub.$* pls2fasta -trimByRegion -regionTable $< $(word 2,$^) $@
 ##
 
 ## Filtering ##
@@ -164,8 +164,7 @@ $(BAXFOFNS) : input.fofn
 	awk 'BEGIN{c=1}{print $$0 > sprintf("input.chunk%03dof%03d.fofn", c++%$(CHUNK_SIZE)+1, $(CHUNK_SIZE))}' $<
 ##
 
-$(BAXFILES) : ;
-
 clean :
 	rm -rf $(TASKDIRS)
+	rm -f chemistry_loaded
 	rm -f input.chunk*
