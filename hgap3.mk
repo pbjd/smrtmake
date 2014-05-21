@@ -115,7 +115,7 @@ filter/subreads.fasta : $(SUBFASTA)
 ## Read overlap using BLASR ##
 $(MAPPEDM4) : correct/seeds.%.m4 : filter/longreads.%.fasta $(QUERYFOFN)
 	$(QSUB) -N blasr.$* -pe smp $(NPROC) blasr $(QUERYFOFN) $< -out $@ -m 4 -nproc $(NPROC) \
-	-bestn $(SPLITBESTN) -noSplitSubreads -maxScore -1000 -maxLCPLength 16 -minMatch 14
+	-bestn $(SPLITBESTN) -nCandidates $(SPLITBEST) -noSplitSubreads -maxScore -1000 -maxLCPLength 16 -minMatch 14
 
 $(QUERYFOFN) : $(SUBFASTA)
 	echo $^ | sed 's/ /\n/g' > $@
